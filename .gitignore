@@ -1,0 +1,21 @@
+# Data files
+fine_tune_data.jsonl
+*.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+venv/
+env/
+.env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store 
