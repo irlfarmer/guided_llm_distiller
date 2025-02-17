@@ -31,7 +31,7 @@ class DistillationLoss(nn.Module):
         super().__init__()
         self.temperature = temperature
         self.kl_loss = nn.KLDivLoss(reduction="batchmean")
-
+```
 
 ## 📊 Training Process
 The training loop:
