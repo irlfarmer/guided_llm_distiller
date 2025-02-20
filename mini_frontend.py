@@ -6,25 +6,25 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 FORCE_CPU = True
 
 def setup_model(model_path):
-    """Setup model and tokenizer with proper error handling"""
+    """Setup model and tokenizer with proper error handling."""
     try:
-        # Load tokenizer first
+        # Load tokenizer
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        # Load model with specific settings
+        # Load model
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
-            torch_dtype=torch.float32,  # Use float32 instead of float16
+            torch_dtype=torch.float32,  # Use float32 for numerical stability
             low_cpu_mem_usage=True,
             device_map='auto' if not FORCE_CPU else 'cpu'
         )
         
-        # Move to CPU if forced or CUDA unavailable
+        # Determine device
         device = 'cpu' if FORCE_CPU or not torch.cuda.is_available() else 'cuda'
         model = model.to(device)
-        model.eval()  # Set to evaluation mode
+        model.eval()  # Set model to evaluation mode
         
         return model, tokenizer, device
     except Exception as e:
@@ -32,55 +32,50 @@ def setup_model(model_path):
         raise
 
 def generate_reply(model, tokenizer, prompt, device):
-    """Generate reply with robust error handling and numerical stability fixes"""
+    """Generate a reply using model.generate with stability fixes."""
     try:
-        # Prepare input
+        # Prepare input tokens
         inputs = tokenizer(prompt, return_tensors="pt").to(device)
         
-        # Generation parameters tuned for numerical stability
-        outputs = model.generate(
-            **inputs,
-            max_length=150,
-            do_sample=True,
-            temperature=0.9,  # Increased temperature for better stability
-            top_p=0.95,      # Increased top_p
-            top_k=50,
-            num_beams=1,
-            pad_token_id=tokenizer.eos_token_id,
-            repetition_penalty=1.1,  # Reduced repetition penalty
-            min_length=10,    # Added min_length
-            no_repeat_ngram_size=2,  # Prevent repetition of n-grams
-            early_stopping=True,
-            bad_words_ids=None,  # Disable bad words filtering
-            renormalize_logits=True  # Add logit renormalization
-        )
+        # Use no_grad to avoid gradient tracking during generation
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_length=150,
+                do_sample=True,
+                temperature=0.9,
+                top_p=0.95,
+                top_k=50,
+                num_beams=1,
+                pad_token_id=tokenizer.eos_token_id,
+                repetition_penalty=1.1,
+                min_length=10,
+                no_repeat_ngram_size=2,
+                early_stopping=False  # Set to False for sampling mode
+                # renormalize_logits removed to avoid numerical issues
+            )
         
-        # Decode output with extra error checking
-        try:
-            full_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
-            if not full_output.strip():  # Check for empty output
-                return "I apologize, but I couldn't generate a meaningful response. Please try again."
-            
-            # Extract answer if it exists
-            if "Answer:" in full_output:
-                return full_output.split("Answer:")[-1].strip()
-            return full_output.strip()
-        except Exception as decode_error:
-            print(f"Decoding error: {str(decode_error)}")
-            return "I apologize, but I encountered an error processing the response. Please try again."
+        # Decode the output
+        full_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        if not full_output.strip():
+            return "I apologize, but I couldn't generate a meaningful response. Please try again."
+        
+        # Optionally, if your prompt expects an "Answer:" section, extract it.
+        if "Answer:" in full_output:
+            return full_output.split("Answer:")[-1].strip()
+        return full_output.strip()
     
     except Exception as e:
         print(f"Generation error: {str(e)}")
         return "I apologize, but I encountered an error generating a response. Please try again."
 
 def main():
-    model_path = "./distilled_model"
+    model_path = "./final_distilled_model"
     print(f"Loading model and tokenizer from {model_path} ...")
     
     try:
         model, tokenizer, device = setup_model(model_path)
         print(f"Model loaded successfully. Running on: {device}")
-        
         print("Chatbot is ready! (Type 'quit' or 'exit' to stop)")
         
         while True:

@@ -1,5 +1,4 @@
 import torch._dynamo
-# Suppress errors from TorchDynamo (such as missing Triton)
 torch._dynamo.config.suppress_errors = True
 
 import json
@@ -9,6 +8,10 @@ import torch.optim as optim
 import logging
 from transformers import AutoModelForCausalLM, AutoTokenizer, GPTQConfig
 
+import torch._dynamo
+torch._dynamo.disable()
+
+
 # Set high precision for float32 matmul (to silence TF32 warnings)
 torch.set_float32_matmul_precision("high")
 
@@ -17,7 +20,6 @@ logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
 
 # ---------------- STEP 1: LOAD TEACHER MODEL ----------------
 teacher_model_name = "TheBloke/Mistral-7B-Instruct-v0.1-GPTQ"
-# Use GPTQ configuration; use_exllama=False (replacing the deprecated disable_exllama)
 quant_config = GPTQConfig(bits=4, use_exllama=False)
 
 tokenizer = AutoTokenizer.from_pretrained(teacher_model_name)
@@ -31,8 +33,6 @@ teacher_model = AutoModelForCausalLM.from_pretrained(
     device_map="auto"
 ).eval()
 
-# Optionally try compiling the model for faster inference;
-# if compilation fails, fall back to eager mode.
 try:
     teacher_model = torch.compile(teacher_model)
 except Exception as e:
@@ -53,7 +53,7 @@ print(f"✅ Loaded {len(data)} Q&A pairs.")
 
 # ---------------- STEP 3: GENERATE TEACHER RESPONSES ----------------
 teacher_outputs = []
-batch_size = 8  # Adjust based on available VRAM
+batch_size = 8
 for i in range(0, len(data), batch_size):
     batch = data[i:i + batch_size]
     questions = [item["messages"][1]["content"] for item in batch]
@@ -92,19 +92,24 @@ print("✅ Student Model Loaded.")
 # ---------------- STEP 5: DEFINE ROBUST DISTILLATION LOSS ----------------
 class RobustDistillationLoss(nn.Module):
     """
-    Computes KL divergence over the answer portion of the sequence.
-    Uses temperature scaling and adds a small epsilon to avoid division by zero.
+    Computes the KL divergence loss on the answer tokens only.
+    Logits are clamped to avoid numerical issues.
     """
     def __init__(self, temperature=2.0, eps=1e-8):
         super().__init__()
         self.temperature = temperature
         self.eps = eps
-        self.kl_loss = nn.KLDivLoss(reduction="sum")
+        # Use "batchmean" for better numerical stability
+        self.kl_loss = nn.KLDivLoss(reduction="batchmean")
 
     def forward(self, student_logits, teacher_logits, mask):
+        # Clamp logits to a reasonable range to avoid overflow
+        student_logits = torch.clamp(student_logits, -50, 50)
+        teacher_logits = torch.clamp(teacher_logits, -50, 50)
         student_log_probs = torch.nn.functional.log_softmax(student_logits / self.temperature, dim=-1)
         teacher_probs = torch.nn.functional.softmax(teacher_logits / self.temperature, dim=-1)
         teacher_probs = teacher_probs.clamp(min=self.eps)
+        # Compute KL divergence and average over masked tokens
         kl = self.kl_loss(student_log_probs, teacher_probs)
         denom = mask.sum() + self.eps
         return kl / denom
@@ -146,6 +151,9 @@ def train_distillation(epochs=3):
                 student_slice = student_logits_full[j, p_len:, :]
                 mask = torch.ones(student_slice.shape[0], device=student_slice.device)
                 sample_loss = loss_fn(student_slice, teacher_slice, mask)
+                # Skip sample if sample_loss is nan
+                if torch.isnan(sample_loss):
+                    continue
                 batch_loss += sample_loss
                 batch_tokens += student_slice.shape[0]
             if batch_tokens == 0:
@@ -162,7 +170,7 @@ def train_distillation(epochs=3):
         avg_loss = total_loss / (total_tokens + 1e-8)
         print(f"Epoch {epoch+1} complete: average loss per token: {avg_loss:.4f}")
 
-train_distillation(epochs=3)
+train_distillation(epochs=1)
 student_model.save_pretrained("./distilled_model")
 student_tokenizer.save_pretrained("./distilled_model")
 print("✅ Distilled Model Saved Successfully!")

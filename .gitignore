@@ -2,7 +2,11 @@
 fine_tune_data.jsonl
 *.jsonl
 /distilled_model/
-distilled_model/
+distilled_model
+./distilled_model/
+/distilled_model
+/final_distilled_model
+
 
 # Python
 __pycache__/
